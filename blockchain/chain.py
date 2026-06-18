@@ -13,7 +13,15 @@ from typing import List, Optional
 # Bloco
 # ──────────────────────────────────────────────
 
+# ──────────────────────────────────────────────
+# Bloco
+# ──────────────────────────────────────────────
+
 class Block:
+    """
+    Representa um único bloco de dados dentro da Blockchain.
+    Ele empacota as transações e as conecta matematicamente ao bloco anterior.
+    """
     def __init__(
         self,
         index: int,
@@ -22,15 +30,34 @@ class Block:
         nonce: int = 0,
         timestamp: float = None,
     ):
+        # Posição do bloco na cadeia (ex: 0 é o Gênese, 1 é o próximo, etc)
         self.index = index
+        
+        # Marcação exata de quando o bloco foi criado
         self.timestamp = timestamp or time.time()
-        self.transactions = transactions          # lista de dicts
+        
+        # Lista contendo as transações de escolta e pagamentos (payload)
+        self.transactions = transactions          
+        
+        # O "elo da corrente". É o hash do bloco que veio antes deste.
+        # É isso que impede que blocos antigos sejam alterados sem quebrar a rede.
         self.previous_hash = previous_hash
+        
+        # Um número arbitrário usado APENAS para resolver o quebra-cabeça 
+        # da mineração (Proof of Work). Ele muda até o hash ficar correto.
         self.nonce = nonce
+        
+        # O "RG" único deste bloco, calculado com base em todo o conteúdo acima.
         self.hash = self.compute_hash()
 
     def compute_hash(self) -> str:
-        """Calcula SHA-256 do conteúdo do bloco (determinístico)."""
+        """
+        Calcula a assinatura digital única (SHA-256) do conteúdo do bloco.
+        É uma função determinística: os mesmos dados sempre geram o mesmo hash.
+        """
+        # Converte o dicionário do bloco em uma string JSON.
+        # O 'sort_keys=True' é OBRIGATÓRIO para garantir que a ordem 
+        # das chaves não mude, o que geraria um hash totalmente diferente.
         block_string = json.dumps(
             {
                 "index": self.index,
@@ -41,9 +68,15 @@ class Block:
             },
             sort_keys=True,
         )
+        # Aplica a função matemática SHA-256 e retorna o texto em hexadecimal
         return hashlib.sha256(block_string.encode()).hexdigest()
 
     def to_dict(self) -> dict:
+        """
+        Transforma o objeto Bloco em um dicionário Python.
+        Isso é necessário para podermos enviar o bloco pela rede (via HTTP/JSON)
+        para os outros computadores (peers).
+        """
         return {
             "index": self.index,
             "timestamp": self.timestamp,
@@ -55,6 +88,11 @@ class Block:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Block":
+        """
+        Faz o caminho inverso do 'to_dict'. 
+        Quando um nó recebe um bloco pela rede (um dicionário JSON), 
+        esse método reconstrói o objeto Block na memória.
+        """
         b = cls(
             index=data["index"],
             transactions=data["transactions"],
@@ -62,7 +100,9 @@ class Block:
             nonce=data["nonce"],
             timestamp=data["timestamp"],
         )
-        b.hash = data["hash"]   # confia no hash recebido; validamos separado
+        # Ao reconstruir, confiamos inicialmente no hash que veio da rede,
+        # mas ele será rigorosamente validado depois pela regra de consenso.
+        b.hash = data["hash"]   
         return b
 
 
