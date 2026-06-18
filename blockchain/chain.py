@@ -13,10 +13,6 @@ from typing import List, Optional
 # Bloco
 # ──────────────────────────────────────────────
 
-# ──────────────────────────────────────────────
-# Bloco
-# ──────────────────────────────────────────────
-
 class Block:
     """
     Representa um único bloco de dados dentro da Blockchain.
@@ -126,7 +122,10 @@ class Blockchain:
     # ── Gênese ────────────────────────────────
 
     def _create_genesis(self):
-        """Cria o bloco 0 com emissão inicial de créditos para cada companhia."""
+        """
+        Cria o bloco 0 com emissão inicial de créditos para cada companhia.
+        É a única vez que "dinheiro" é criado do nada no sistema.
+        """
         genesis_txs = []
         for company in ["AlphaShipping", "BetaMarine", "GammaCargo", "DeltaNaval"]:
             genesis_txs.append({
@@ -143,7 +142,12 @@ class Blockchain:
     # ── PoW ───────────────────────────────────
 
     def proof_of_work(self, block: Block) -> str:
-        """Minera o bloco: incrementa nonce até hash começar com DIFFICULTY zeros."""
+        """
+        O Mecanismo de Consenso (Mineração).
+        O computador fica a "adivinhar" um número (nonce) até que o hash do bloco comece
+        com a quantidade de zeros definida em DIFFICULTY (neste caso, 3 zeros).
+        Isso exige poder computacional, evitando ataques e fraudes na rede.
+        """
         block.nonce = 0
         computed = block.compute_hash()
         prefix = "0" * DIFFICULTY
@@ -157,7 +161,7 @@ class Blockchain:
     def mine_pending(self, miner_node: str) -> Optional[Block]:
         """
         Agrupa transações pendentes em um bloco e minera.
-        Retorna None se não houver transações.
+        Retorna None se não houver transações na fila.
         """
         if not self.pending_transactions:
             return None
@@ -196,7 +200,7 @@ class Blockchain:
                         balance -= tx["amount"] # Saiu dinheiro
                     if tx.get("to") == company:
                         balance += tx["amount"] # Entrou dinheiro
-                # Se for um reembolso (caso a missão falhasse, por exemplo)
+                # Se for um reembolso
                 elif tx.get("type") == "REFUND":
                     if tx.get("to") == company:
                         balance += tx["amount"]
@@ -218,7 +222,7 @@ class Blockchain:
     def confirmed_tx_ids(self) -> set:
         """
         Varre a blockchain e guarda todos os IDs de transações que já estão
-        seladas em blocos. Usado para evitar que a mesma transação seja processada duas vezes.
+        seladas em blocos. Usado para evitar duplo gasto.
         """
         ids = set()
         for block in self.chain:
@@ -249,7 +253,36 @@ class Blockchain:
         if tx.get("tx_id") in self.pending_tx_ids():
             return False, "Transação já está na mempool (duplo gasto bloqueado)"
 
-        # 3ª Barreira: Regra de Negócio (Tem dinheiro para pagar?)
+        # 3ª Barreira: Verificar drone já alocado no ledger (entre nós diferentes)
+        # Quando dois nós distintos enviam DRONE_ALLOC para o mesmo drone
+        # quase simultaneamente, o segundo é rejeitado aqui na mempool.
+        if tx_type == "DRONE_ALLOC":
+            drone_id = tx.get("drone_id")
+            alloc_open = False
+            
+            # Verifica blocos confirmados
+            for block in self.chain:
+                for t in block.transactions:
+                    if t.get("drone_id") != drone_id:
+                        continue
+                    if t.get("type") == "DRONE_ALLOC":
+                        alloc_open = True
+                    elif t.get("type") == "DRONE_RELEASE":
+                        alloc_open = False
+                        
+            # Verifica mempool pendente
+            for t in self.pending_transactions:
+                if t.get("drone_id") != drone_id:
+                    continue
+                if t.get("type") == "DRONE_ALLOC":
+                    alloc_open = True
+                elif t.get("type") == "DRONE_RELEASE":
+                    alloc_open = False
+                    
+            if alloc_open:
+                return False, f"Drone {drone_id} já está alocado no ledger (duplo gasto de drone bloqueado)"
+
+        # 4ª Barreira: Regra de Negócio de Pagamentos (Tem dinheiro para pagar?)
         if tx_type == "PAYMENT":
             sender = tx.get("from")
             amount = tx.get("amount", 0)
@@ -258,8 +291,6 @@ class Blockchain:
             confirmed_balance = self.get_balance(sender)
 
             # Calcula quanto dinheiro a empresa já comprometeu na fila de espera.
-            # Ex: Se ela tem 100, pediu um drone (50 na fila) e tentou pedir outro,
-            # o pending_spent será 50.
             pending_spent = sum(
                 t["amount"]
                 for t in self.pending_transactions
@@ -281,4 +312,97 @@ class Blockchain:
         self.pending_transactions.append(tx)
         return True, "Transação aceita na mempool"
 
-    # ... (O restante do código, como add_mission_log e replace_chain, continua igual)
+    # ── Missões (laudos imutáveis) ─────────────
+
+    def add_mission_log(self, log: dict) -> tuple[bool, str]:
+        """Registra laudo de missão como transação especial."""
+        log["type"] = "MISSION_LOG"
+        log["timestamp"] = log.get("timestamp", time.time())
+        if not log.get("tx_id"):
+            log["tx_id"] = f"mission_{log.get('drone_id', 'X')}_{int(log['timestamp'])}"
+        return self.add_transaction(log)
+
+    # ── Laudos ────────────────────────────────
+
+    def get_mission_logs(self) -> list:
+        logs = []
+        for block in self.chain:
+            for tx in block.transactions:
+                if tx.get("type") == "MISSION_LOG":
+                    logs.append({**tx, "block_index": block.index, "block_hash": block.hash})
+        return logs
+
+    def get_payments(self) -> list:
+        payments = []
+        for block in self.chain:
+            for tx in block.transactions:
+                if tx.get("type") == "PAYMENT":
+                    payments.append({**tx, "block_index": block.index})
+        return payments
+
+    # ── Validação da cadeia ────────────────────
+
+    def is_valid(self) -> bool:
+        """
+        Percorre a cadeia verificando:
+        1. Hash de cada bloco está correto
+        2. previous_hash encadeia corretamente
+        3. Hash satisfaz dificuldade (exceto gênese)
+        """
+        prefix = "0" * DIFFICULTY
+        for i in range(1, len(self.chain)):
+            curr = self.chain[i]
+            prev = self.chain[i - 1]
+
+            # Recalcula e compara
+            if curr.hash != curr.compute_hash():
+                return False
+
+            # Encadeamento
+            if curr.previous_hash != prev.hash:
+                return False
+
+            # PoW
+            if not curr.hash.startswith(prefix):
+                return False
+
+        return True
+
+    # ── Substituição de cadeia (consenso) ─────
+
+    def replace_chain(self, new_chain_data: list) -> bool:
+        """
+        Regra da cadeia mais longa: aceita nova cadeia se for mais longa e válida.
+        """
+        if len(new_chain_data) <= len(self.chain):
+            return False
+
+        # Reconstrói objetos Block
+        new_chain = [Block.from_dict(b) for b in new_chain_data]
+
+        # Valida nova cadeia
+        prefix = "0" * DIFFICULTY
+        for i in range(1, len(new_chain)):
+            curr = new_chain[i]
+            prev = new_chain[i - 1]
+            if curr.hash != curr.compute_hash():
+                return False
+            if curr.previous_hash != prev.hash:
+                return False
+            if not curr.hash.startswith(prefix):
+                return False
+
+        self.chain = new_chain
+        return True
+
+    # ── Utilitários ───────────────────────────
+
+    @property
+    def last_block(self) -> Block:
+        return self.chain[-1]
+
+    def to_list(self) -> list:
+        return [b.to_dict() for b in self.chain]
+
+    def length(self) -> int:
+        return len(self.chain)
