@@ -430,3 +430,7 @@ def get_local_ip():
         return ip
     except Exception:
         return "127.0.0.1"
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Nó Blockchain — Estreito de Ormuz")
